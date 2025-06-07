@@ -1,1 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Procedural Jellyfish - Pulse Swim!</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #030305; font-family: 'Inter', sans-serif; color: #fff; }
+        canvas { display: block; }
+        .message-box { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background-color: rgba(30, 30, 50, 0.85); color: white; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); z-index: 1000; display: none; text-align: center; max-width: 90%; font-size: 0.9em; }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <canvas id="jellyfishCanvas"></canvas>
+    <div id="messageBox" class="message-box"></div>
 
+    <script>
+        const canvas = document.getElementById('jellyfishCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let width, height;
+        let t = 0;
+        
+        let jellyX, jellyY;
+        let velocityX = 0, velocityY = 0;
+        const friction = 0.975; // Slightly increased friction for more "watery" feel
+        const maxSpeed = 4.5;   // Max speed achievable through pulses
+        const tentacleLagStrength = 5.0; 
+        const numPoints = 10000;
+
+        const keysPressed = {};
+        let isTouching = false;
+        let activeTouchX, activeTouchY;
+        let touchPulseDirX = 0, touchPulseDirY = 0; // Store direction for touch-initiated pulse
+
+        // Pulse mechanics
+        let isPulsing = false;      // Is a pulse currently happening?
+        let pulseProgress = 0;    // How far through the current pulse (0 to 1)
+        const pulseDuration = 0.35; // Seconds for one pulse contraction/expulsion cycle
+        const pulseForce = 0.7;     // Base force of a pulse
+        let pulseCooldown = 0;      // Timer for cooldown between pulses
+        const pulseCooldownTime = 0.15; // Seconds of cooldown after a pulse
+
+        const messageBox = document.getElementById('messageBox');
+
+        function showMessage(message, duration = 4000) {
+            messageBox.textContent = message;
+            messageBox.style.display = 'block';
+            setTimeout(() => { messageBox.style.display = 'none'; }, duration);
+        }
+
+        function resizeCanvas() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+            if (jellyX === undefined || jellyY === undefined) {
+                jellyX = width / 2;
+                jellyY = height / 2;
+            }
+        }
+
+        function calculateTentaclePoint(x_param, y_param, time_t, baseX, baseY, currentSpeed, pulseProgress) {
+            let k = 5 * Math.cos(x_param / 14) * Math.cos(y_param / 30);
+            let e_val = y_param / 8 - 13;
+            
+            // Speed-based modifiers (toned down slightly)
+            const d_speed_modifier = 1.0 + Math.min(currentSpeed / (maxSpeed * 2.5), 0.20); 
+            const q_speed_modifier = 1.0 + Math.min(currentSpeed / (maxSpeed * 2.5), 0.10);
+
+            // Pulse-based modifier: tentacles might flare more during a pulse
+            const pulse_effect_modifier = 1.0 + Math.sin(pulseProgress * Math.PI) * 0.3; // Max effect mid-pulse
+
+            let d_val = ((k * k + e_val * e_val) / 59 + 4) * d_speed_modifier * pulse_effect_modifier;
+            const term_for_sin_q = Math.atan2(k, e_val) * e_val;
+            let q_val = (60 - 3 * Math.sin(term_for_sin_q) + k * (3 + (4 / d_val) * Math.sin(d_val * d_val - time_t * 2))) * q_speed_modifier * pulse_effect_modifier;
+            
+            const c_angle = d_val / 2 + e_val / 99 - time_t / 18;
+            const finalX = q_val * Math.sin(c_angle) + baseX;
+            const finalY = (q_val + d_val * 9) * Math.cos(c_angle) + baseY;
+            return { x: finalX, y: finalY, d: d_val };
+        }
+        
+        function updatePhysics() {
+            const deltaTime = 1/60; // Approximate delta time
+
+            // Apply friction
+            velocityX *= friction;
+            velocityY *= friction;
+
+            if (pulseCooldown > 0) pulseCooldown -= deltaTime;
+
+            let wantsToMove = (keysPressed['w'] || keysPressed['arrowup'] || keysPressed['s'] || keysPressed['arrowdown'] || keysPressed['a'] || keysPressed['arrowleft'] || keysPressed['d'] || keysPressed['arrowright'] || (isTouching && (Math.abs(activeTouchX - jellyX) > 10 || Math.abs(activeTouchY - jellyY) > 10) ));
+
+            if (wantsToMove && !isPulsing && pulseCooldown <= 0) {
+                isPulsing = true;
+                pulseProgress = 0; // Start pulse from beginning
+                pulseCooldown = pulseCooldownTime + pulseDuration; // Cooldown starts after pulse finishes
+
+                if (isTouching) {
+                    let accelDirX = activeTouchX - jellyX;
+                    let accelDirY = activeTouchY - jellyY;
+                    const distToTouch = Math.sqrt(accelDirX*accelDirX + accelDirY*accelDirY);
+                    if (distToTouch > 1) {
+                        touchPulseDirX = accelDirX / distToTouch;
+                        touchPulseDirY = accelDirY / distToTouch;
+                    } else { // Default pulse if touch is too close
+                        touchPulseDirX = 0; touchPulseDirY = -1; 
+                    }
+                }
+            }
+
+            if (isPulsing) {
+                pulseProgress += deltaTime / pulseDuration;
+                // Effective force peaks mid-pulse (sin curve for smoother application)
+                const forceMultiplier = Math.sin(pulseProgress * Math.PI) * pulseForce; 
+
+                if (isTouching) {
+                    velocityX += touchPulseDirX * forceMultiplier;
+                    velocityY += touchPulseDirY * forceMultiplier;
+                } else { // Keyboard
+                    if (keysPressed['w'] || keysPressed['arrowup']) velocityY -= forceMultiplier;
+                    if (keysPressed['s'] || keysPressed['arrowdown']) velocityY += forceMultiplier;
+                    if (keysPressed['a'] || keysPressed['arrowleft']) velocityX -= forceMultiplier;
+                    if (keysPressed['d'] || keysPressed['arrowright']) velocityX += forceMultiplier;
+                }
+
+                if (pulseProgress >= 1.0) {
+                    isPulsing = false;
+                    pulseProgress = 0;
+                }
+            }
+
+            // Limit speed
+            const currentSpeed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
+            if (currentSpeed > maxSpeed) {
+                const factor = maxSpeed / currentSpeed;
+                velocityX *= factor;
+                velocityY *= factor;
+            }
+
+            jellyX += velocityX;
+            jellyY += velocityY;
+
+            const bounceFactor = -0.3; 
+            const edgeMargin = 10; 
+            if (jellyX < edgeMargin) { jellyX = edgeMargin; velocityX *= bounceFactor; }
+            if (jellyX > width - edgeMargin) { jellyX = width - edgeMargin; velocityX *= bounceFactor; }
+            if (jellyY < edgeMargin) { jellyY = edgeMargin; velocityY *= bounceFactor; }
+            if (jellyY > height - edgeMargin) { jellyY = height - edgeMargin; velocityY *= bounceFactor; }
+        }
+
+        function draw() {
+            updatePhysics(); 
+            ctx.fillStyle = '#090909';
+            ctx.fillRect(0, 0, width, height);
+            t += Math.PI / 120;
+
+            // --- Jellyfish Body (The one intended cap) ---
+            // This section draws the single, small, pulsating cap for the jellyfish.
+            // If you see another cap-like object, it's the "anomaly" and not from this specific drawing block.
+            const bodyBaseRadius = Math.min(width, height) * 0.02; // Slightly larger base for pulsing visibility
+            
+            // Bell contraction/expansion based on pulseProgress
+            // Bell is most contracted mid-pulse (pulseProgress ~ 0.5)
+            const pulseContraction = Math.sin(pulseProgress * Math.PI) * 0.4; // 0 (rest) to 0.4 (max contraction)
+            const dynamicRadiusFactor = 1.0 - pulseContraction;
+            const currentBodyRadius = bodyBaseRadius * dynamicRadiusFactor;
+
+            const bodyBobAmount = Math.sin(t * 1.8) * (bodyBaseRadius * 0.1);
+            let bellVisualCenterY = (jellyY - currentBodyRadius * 0.3) + bodyBobAmount; // Raise a bit more
+            
+            // Animate bell shape during pulse
+            // Bell gets flatter and wider at peak of pulse contraction (pulseProgress ~ 0.5)
+            const bellShapeFactor = Math.sin(pulseProgress * Math.PI); // 0 to 1
+            const bellTopHeight = currentBodyRadius * (1.5 - bellShapeFactor * 0.7); // Flatter top
+            const bellBottomControlYOffset = currentBodyRadius * (0.7 + bellShapeFactor * 0.3); // Wider bottom control
+
+            ctx.beginPath();
+            ctx.moveTo(jellyX - currentBodyRadius, bellVisualCenterY);
+            ctx.quadraticCurveTo(jellyX, bellVisualCenterY - bellTopHeight, jellyX + currentBodyRadius, bellVisualCenterY); // Animate top curve
+            ctx.quadraticCurveTo(jellyX, bellVisualCenterY + bellBottomControlYOffset, jellyX - currentBodyRadius, bellVisualCenterY); // Animate bottom curve
+            ctx.closePath();
+
+            const bodyGradient = ctx.createRadialGradient(
+                jellyX, bellVisualCenterY - currentBodyRadius * 0.5, currentBodyRadius * 0.1,
+                jellyX, bellVisualCenterY, currentBodyRadius * 1.2 // Adjusted outer radius for new base size
+            );
+            const baseHue = (t * 15) % 360;
+            bodyGradient.addColorStop(0, `hsla(${baseHue}, 85%, 80%, 0.7)`); 
+            bodyGradient.addColorStop(0.5, `hsla(${(baseHue + 25) % 360}, 80%, 70%, 0.5)`);
+            bodyGradient.addColorStop(1, `hsla(${(baseHue + 50) % 360}, 75%, 55%, 0.25)`);
+            ctx.fillStyle = bodyGradient;
+            ctx.fill();
+
+            // --- Tentacles ---
+            // Tentacles might be pushed slightly by the pulse itself before lagging
+            const pulsePushFactor = Math.sin(pulseProgress * Math.PI) * currentBodyRadius * 0.5;
+            const tentacleOriginX = jellyX - velocityX * tentacleLagStrength;
+            const tentacleOriginY = (bellVisualCenterY + currentBodyRadius * 0.1 + pulsePushFactor) - velocityY * tentacleLagStrength;
+            
+            const currentJellySpeed = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
+
+            for (let i = 0; i < numPoints; i++) {
+                const x_param = i % 200;
+                const y_param = i / 43.0;
+                const pt = calculateTentaclePoint(x_param, y_param, t, tentacleOriginX, tentacleOriginY, currentJellySpeed, pulseProgress);
+
+                const hue = (pt.d * 8 + y_param * 1.5 - t * 25) % 360; 
+                const lightness = 35 + Math.sin(pt.d * 0.3 + t * 1.0 + y_param / 20) * 20; 
+                const alpha = 0.15 + Math.sin(y_param / 40 + t * 1.5 + pt.d * 0.05) * 0.25; 
+                ctx.fillStyle = `hsla(${hue}, 100%, ${lightness}%, ${Math.max(0.05, Math.min(0.60, alpha))})`;
+                ctx.fillRect(pt.x - 0.75, pt.y - 0.75, 1.5, 1.5);
+            }
+            requestAnimationFrame(draw); 
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        document.addEventListener('keydown', (e) => {
+            keysPressed[e.key.toLowerCase()] = true;
+            if (["arrowup", "arrowdown", "arrowleft", "arrowright", "w", "a", "s", "d"].includes(e.key.toLowerCase())) e.preventDefault();
+        });
+        document.addEventListener('keyup', (e) => { keysPressed[e.key.toLowerCase()] = false; });
+        document.addEventListener('touchstart', (e) => {
+            if (e.touches.length > 0) {
+                isTouching = true;
+                activeTouchX = e.touches[0].clientX;
+                activeTouchY = e.touches[0].clientY;
+            }
+            e.preventDefault(); 
+        }, { passive: false });
+        document.addEventListener('touchmove', (e) => {
+            if (isTouching && e.touches.length > 0) {
+                activeTouchX = e.touches[0].clientX;
+                activeTouchY = e.touches[0].clientY;
+            }
+            e.preventDefault();
+        }, { passive: false });
+        document.addEventListener('touchend', (e) => { if (e.touches.length === 0) isTouching = false; });
+        document.addEventListener('touchcancel', (e) => { isTouching = false; });
+
+        resizeCanvas();
+        showMessage("Swim with ASWD/Arrows or Touch & Drag! Jellyfish now pulses to move.", 5000);
+        draw();
+    </script>
+</body>
+</html>
+```
+This is a significant overhaul of the movement and body animation. The jellyfish should now have a distinct pulsing motion when you direct it, and its bell and tentacles should react to these pulses. It will likely require some tuning of the new constants (`pulseDuration`, `pulseForce`, `pulseCooldownTime`, animation factors) to get the feel just right, but this should be a solid step towards the realism you're aiming f
